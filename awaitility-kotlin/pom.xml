@@ -65,7 +65,7 @@
                 <!-- See https://github.com/Kotlin/dokka#using-the-maven-plugin for more examples-->
                 <groupId>org.jetbrains.dokka</groupId>
                 <artifactId>dokka-maven-plugin</artifactId>
-                <version>0.9.16</version>
+                <version>1.4.10.2</version>
                 <executions>
                     <execution>
                         <phase>prepare-package</phase>
