@@ -25,13 +25,16 @@ import org.awaitility.pollinterval.PollInterval;
 import org.hamcrest.Matcher;
 
 import java.time.Duration;
+import java.time.format.DateTimeParseException;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static org.awaitility.Durations.ONE_HUNDRED_MILLISECONDS;
+import static org.awaitility.Durations.TEN_SECONDS;
 
 /**
  * Awaitility is a small Java DSL for synchronizing (waiting for) asynchronous
@@ -76,6 +79,13 @@ import static org.awaitility.Durations.ONE_HUNDRED_MILLISECONDS;
  * Awaitility.setDefaultPollDelay(..)
  * </pre>
  * <p/>
+ * or by setting system properties in ISO-8601 duration format, for example:
+ * <pre>
+ * awaitility.defaultTimeout=PT10S
+ * awaitility.defaultPollInterval=PT0.1S
+ * awaitility.defaultPollDelay=PT0.005S
+ * </pre>
+ * <p/>
  * You can also reset to the default values using {@link org.awaitility.Awaitility#reset()}.
  * In order to use Awaitility effectively it's recommended to statically import
  * the following methods from the Awaitility framework:
@@ -113,22 +123,48 @@ import static org.awaitility.Durations.ONE_HUNDRED_MILLISECONDS;
  */
 public class Awaitility {
 
-    private static final Duration DEFAULT_POLL_DELAY = null;
+    private static final Duration DEFAULT_POLL_DELAY;
 
-    private static final PollInterval DEFAULT_POLL_INTERVAL = new FixedPollInterval(ONE_HUNDRED_MILLISECONDS);
+    private static final PollInterval DEFAULT_POLL_INTERVAL;
+
+    private static final WaitConstraint DEFAULT_WAIT_CONSTRAINT;
+
+    static {
+        DEFAULT_POLL_DELAY = getDurationFromSystemProperty("awaitility.defaultPollDelay", null);
+
+        Duration pollIntervalValue = getDurationFromSystemProperty("awaitility.defaultPollInterval", ONE_HUNDRED_MILLISECONDS);
+        DEFAULT_POLL_INTERVAL = new FixedPollInterval(pollIntervalValue);
+
+        Duration timeoutValue = getDurationFromSystemProperty("awaitility.defaultTimeout", TEN_SECONDS);
+        DEFAULT_WAIT_CONSTRAINT = AtMostWaitConstraint.TEN_SECONDS.withMaxWaitTime(timeoutValue);
+    }
+
+    private static Duration getDurationFromSystemProperty(String propertyName, Duration defaultValue) {
+        String property = System.getProperty(propertyName);
+        if (property == null) {
+            return defaultValue;
+        }
+
+        try {
+            return Duration.parse(property);
+        } catch (DateTimeParseException ignored) {
+            // Use the existing default if the supplied value cannot be parsed.
+            return defaultValue;
+        }
+    }
 
     /**
-     * The default poll interval (fixed 100 ms).
+     * The default poll interval (fixed 100 ms or set via system property).
      */
     private static volatile PollInterval defaultPollInterval = DEFAULT_POLL_INTERVAL;
 
     /**
-     * The default wait constraint (10 seconds).
+     * The default wait constraint (10 seconds or set via system property).
      */
-    private static volatile WaitConstraint defaultWaitConstraint = AtMostWaitConstraint.TEN_SECONDS;
+    private static volatile WaitConstraint defaultWaitConstraint = DEFAULT_WAIT_CONSTRAINT;
 
     /**
-     * The default poll delay
+     * The default poll delay (<tt>null</tt> or set via system property).
      */
     private static volatile Duration defaultPollDelay = DEFAULT_POLL_DELAY;
 
@@ -153,7 +189,7 @@ public class Awaitility {
     private static volatile ExecutorLifecycle defaultExecutorLifecycle = null;
 
     /**
-     * If this condition if _ever_ false, indicates our condition will _never_ be true.
+     * If this condition is _ever_ true, indicates our condition will _never_ be true.
      */
     private static volatile FailFastCondition defaultFailFastCondition = null;
 
@@ -266,13 +302,14 @@ public class Awaitility {
      * <li>Catch all uncaught exceptions - true</li>
      * <li>Do not ignore caught exceptions</li>
      * <li>Don't handle condition evaluation results</li>
+     * <li>Don't log anything</li>
      * <li>No fail fast condition</li>
      * </ul>
      */
     public static void reset() {
         defaultPollInterval = DEFAULT_POLL_INTERVAL;
         defaultPollDelay = DEFAULT_POLL_DELAY;
-        defaultWaitConstraint = AtMostWaitConstraint.TEN_SECONDS;
+        defaultWaitConstraint = DEFAULT_WAIT_CONSTRAINT;
         defaultCatchUncaughtExceptions = true;
         defaultConditionEvaluationListener = null;
         defaultExecutorLifecycle = null;
@@ -475,7 +512,40 @@ public class Awaitility {
     }
 
     /**
-     * If the supplied Callable <i>ever</i> returns false, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
+     * Sets the default logging condition evaluation listener that all await statements will use. Method could override
+     * result of usage {@link #setDefaultConditionEvaluationListener(ConditionEvaluationListener)}.
+     *
+     * @param loggingListener logging condition evaluation each time evaluation of a condition occurs.
+     * @see #setDefaultConditionEvaluationListener(ConditionEvaluationListener)
+     */
+    public static void setLoggingListener(ConditionEvaluationListener loggingListener) {
+        Awaitility.defaultConditionEvaluationListener = loggingListener;
+    }
+
+    /**
+     * Sets the default logging condition evaluation listener that all await statements will use. Method could override
+     * result of usage {@link #setDefaultConditionEvaluationListener(ConditionEvaluationListener)} with custom consumer.
+     *
+     * @param logPrinter consumer for condition logging
+     * @see #setDefaultConditionEvaluationListener(ConditionEvaluationListener)
+     */
+    public static void setLogging(Consumer<String> logPrinter) {
+        setLoggingListener(new ConditionEvaluationLogger(logPrinter));
+    }
+
+    /**
+     * Sets the default logging condition evaluation listener that all await statements will use. Method could override
+     * result of usage {@link #setDefaultConditionEvaluationListener(ConditionEvaluationListener)} with logging to
+     * System.out.
+     *
+     * @see #setDefaultConditionEvaluationListener(ConditionEvaluationListener)
+     */
+    public static void setDefaultLogging() {
+        setLoggingListener(new ConditionEvaluationLogger(System.out::println));
+    }
+
+    /**
+     * If the supplied Callable <i>ever</i> returns true, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
      * Throws a {@link TerminalFailureException} if fail fast condition evaluates to <code>true</code>. If you want to specify a more descriptive error message
      * then use {@link #setDefaultFailFastCondition(String, Callable)}.
      *
@@ -487,11 +557,10 @@ public class Awaitility {
     }
 
     /**
-     * If the supplied <code>failFastAssertion</code> <i>ever</i> returns throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
+     * If the supplied <code>failFastAssertion</code> <i>ever</i> throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
      * This allows you to use a more descriptive error message of why the fail-fast condition failed instead of using {@link #setDefaultFailFastCondition(String, Callable)}.
      *
      * @param defaultFailFastAssertion The terminal failure assertion
-     * @return the condition factory
      * @see #setDefaultFailFastCondition(Callable)
      * @see ConditionFactory#failFast(ThrowingRunnable)
      */
@@ -500,12 +569,11 @@ public class Awaitility {
     }
 
     /**
-     * If the supplied <code>failFastAssertion</code> <i>ever</i> returns throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
+     * If the supplied <code>failFastAssertion</code> <i>ever</i> throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
      * This allows you to use a more descriptive error message of why the fail-fast condition failed instead of using {@link #setDefaultFailFastCondition(String, Callable)}.
      *
      * @param failFastFailureReason    A descriptive reason why the fail fast condition has failed, will be included in the {@link TerminalFailureException} thrown if <code>failFastAssertion</code> throws an exception.
      * @param defaultFailFastAssertion The terminal failure assertion
-     * @return the condition factory
      * @see #setDefaultFailFastCondition(Callable)
      * @see ConditionFactory#failFast(ThrowingRunnable)
      */
@@ -514,7 +582,7 @@ public class Awaitility {
     }
 
     /**
-     * If the supplied Callable <i>ever</i> returns false, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
+     * If the supplied Callable <i>ever</i> returns true, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
      * Throws a {@link TerminalFailureException} if fail fast condition evaluates to <code>true</code>.
      *
      * @param defaultFailFastCondition The terminal failure condition

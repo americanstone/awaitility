@@ -31,6 +31,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.*;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -100,7 +101,7 @@ public class ConditionFactory {
      * @param exceptionsIgnorer           Determine which exceptions that should ignored
      * @param conditionEvaluationListener Determine which exceptions that should ignored
      * @param executorLifecycle           The executor service and the lifecycle of the executor service that'll be used to evaluate the condition during polling
-     * @param failFastCondition           If this condition if ever false, indicates our condition will never be true.
+     * @param failFastCondition           If this condition is ever true, indicates our condition will never be true.
      */
     public ConditionFactory(final String alias, WaitConstraint timeoutConstraint, PollInterval pollInterval, Duration pollDelay,
                             boolean catchUncaughtExceptions, ExceptionIgnorer exceptionsIgnorer,
@@ -132,6 +133,26 @@ public class ConditionFactory {
     public ConditionFactory conditionEvaluationListener(ConditionEvaluationListener conditionEvaluationListener) {
         return new ConditionFactory(alias, timeoutConstraint, pollInterval, pollDelay, catchUncaughtExceptions,
                 exceptionsIgnorer, conditionEvaluationListener, executorLifecycle, failFastCondition);
+    }
+
+    /**
+     * Logging condition evaluation results each time evaluation of a condition occurs to System.out.
+     *
+     * @return the condition factory
+     */
+    public ConditionFactory logging() {
+        return new ConditionFactory(alias, timeoutConstraint, pollInterval, pollDelay, catchUncaughtExceptions,
+                exceptionsIgnorer, new ConditionEvaluationLogger(), executorLifecycle, failFastCondition);
+    }
+
+    /**
+     * Logging condition evaluation results each time evaluation of a condition occurs to chosen consumer.
+     *
+     * @return the condition factory
+     */
+    public ConditionFactory logging(Consumer<String> logPrinter) {
+        return new ConditionFactory(alias, timeoutConstraint, pollInterval, pollDelay, catchUncaughtExceptions,
+                exceptionsIgnorer, new ConditionEvaluationLogger(logPrinter), executorLifecycle, failFastCondition);
     }
 
     /**
@@ -587,7 +608,7 @@ public class ConditionFactory {
     }
 
     /**
-     * If the supplied Callable <i>ever</i> returns false, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
+     * If the supplied Callable <i>ever</i> returns true, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
      * Throws a {@link TerminalFailureException} if fail fast condition evaluates to <code>true</code>.
      *
      * @param failFastFailureReason A descriptive reason why the fail fast condition has failed, will be included in the {@link TerminalFailureException} thrown if <code>failFastCondition</code> evaluates to <code>true</code>.
@@ -606,14 +627,14 @@ public class ConditionFactory {
     }
 
     /**
-     * If the supplied <code>failFastAssertion</code> <i>ever</i> returns throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
+     * If the supplied <code>failFastAssertion</code> <i>ever</i> throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
      * This allows you to use a more descriptive error message of why the fail-fast condition failed by doing e.g.:
      *
      * <pre>
      * Workflow workflow = ..
      * await()
      *     .atMost(1, MINUTES)
-     *     .failFast(() ->  assertThat(workflow.get("phase")).describedAs("Workflow failed. Last known state:\n" + workflow.toPrettyString()).isNotEqualTo("Failed");
+     *     .failFast(() ->  assertThat(workflow.get("phase")).describedAs("Workflow failed. Last known state:\n" + workflow.toPrettyString()).isNotEqualTo("Failed"))
      *     .untilAsserted(...);
      * </pre>
      *
@@ -626,14 +647,14 @@ public class ConditionFactory {
     }
 
     /**
-     * If the supplied <code>failFastAssertion</code> <i>ever</i> returns throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
+     * If the supplied <code>failFastAssertion</code> <i>ever</i> throws an exception, it indicates our condition will <i>never</i> be true, and if so fail the system immediately.
      * This allows you to use a more descriptive error message of why the fail-fast condition failed by doing e.g.:
      *
      * <pre>
      * Workflow workflow = ..
      * await()
      *     .atMost(1, MINUTES)
-     *     .failFast("workflow failed", () ->  assertThat(workflow.get("phase")).describedAs("Workflow failed. Last known state:\n" + workflow.toPrettyString()).isNotEqualTo("Failed");
+     *     .failFast("workflow failed", () ->  assertThat(workflow.get("phase")).describedAs("Workflow failed. Last known state:\n" + workflow.toPrettyString()).isNotEqualTo("Failed"))
      *     .untilAsserted(...);
      * </pre>
      *
@@ -770,6 +791,35 @@ public class ConditionFactory {
     }
 
     /**
+     * Await until a callable returns a value that when passed to a {@link java.util.function.Consumer} ends without throwing an exception. E.g. with Java 8:
+     * <p>&nbsp;</p>
+     * <pre>
+     * public class MyBean {
+     *
+     *     public String myFunction() {
+     *          // Imagine stuff being executed in asynchrinously here and the result of this
+     *          // operation is a string called "my value"
+     *         return "my value"
+     *     }
+     * }
+     *
+     * // Then in your test you can wait for the "myFunction" to return "my value"
+     * await().untilAsserted(myBean::myFunction, value -&gt;  Assertions.assertThat(value).isEqualTo("my value"));
+     * </pre>
+     *
+     * @param supplier       the supplier that is responsible for executing the assertion and throwing AssertionError on failure.
+     * @param assertConsumer The consumer that will assert that the supplied value is correct, or throw an exception.
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     * @since 4.3.2
+     */
+    public <T> void untilAsserted(final Callable<T> supplier, final Consumer<? super T> assertConsumer) {
+        untilAsserted(() -> {
+            T value = supplier.call();
+            assertConsumer.accept(value);
+        });
+    }
+
+    /**
      * Await until a Atomic variable has a value matching the specified
      * {@link org.hamcrest.Matcher}. E.g.
      * <p>&nbsp;</p>
@@ -784,11 +834,23 @@ public class ConditionFactory {
      * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
      */
     public Integer untilAtomic(final AtomicInteger atomic, final Matcher<? super Integer> matcher) {
-        return until(new CallableHamcrestCondition<>(new Callable<Integer>() {
-            public Integer call() {
-                return atomic.get();
-            }
-        }, matcher, generateConditionSettings()));
+        return until(new CallableHamcrestCondition<>(atomic::get, matcher, generateConditionSettings()));
+    }
+
+    /**
+     * Await until a Atomic integer is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAtomic(myAtomic, value -&gt; Assertions.assertThat(value).isEqualTo(123));
+     * </pre>
+     *
+     * @param atomic  the atomic variable
+     * @param matcher the matcher The consumer that validates that the atomic reference value is correct, or throws an exception
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public void untilAtomic(final AtomicInteger atomic, final Consumer<? super Integer> matcher) {
+        untilAsserted(atomic::get, matcher);
     }
 
     /**
@@ -810,6 +872,22 @@ public class ConditionFactory {
     }
 
     /**
+     * Await until a Atomic long is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAtomic(myAtomic, value -&gt; Assertions.assertThat(value).isEqualTo(123L));
+     * </pre>
+     *
+     * @param atomic  the atomic variable
+     * @param matcher the matcher The consumer that validates that the atomic reference value is correct, or throws an exception
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public void untilAtomic(final AtomicLong atomic, final Consumer<? super Long> matcher) {
+        untilAsserted(atomic::get, matcher);
+    }
+
+    /**
      * Await until a Atomic variable has a value matching the specified
      * {@link org.hamcrest.Matcher}. E.g.
      * <p>&nbsp;</p>
@@ -824,6 +902,22 @@ public class ConditionFactory {
      */
     public void untilAtomic(final AtomicBoolean atomic, final Matcher<? super Boolean> matcher) {
         until(new CallableHamcrestCondition<>(atomic::get, matcher, generateConditionSettings()));
+    }
+
+    /**
+     * Await until a AtomicBoolean is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAtomic(myAtomicBoolean, value -&gt; Assertions.assertThat(value).isTrue());
+     * </pre>
+     *
+     * @param atomic  the atomic variable
+     * @param matcher the matcher The consumer that validates that the atomic boolean value is correct, or throws an exception
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public void untilAtomic(final AtomicBoolean atomic, final Consumer<? super Boolean> matcher) {
+        untilAsserted(atomic::get, matcher);
     }
 
     /**
@@ -862,6 +956,22 @@ public class ConditionFactory {
     }
 
     /**
+     * Await until a LongAdder is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAdder(myAdder, value -&gt; Assertions.assertThat(value).isEqualTo(123L));
+     * </pre>
+     *
+     * @param adder   the atomic variable
+     * @param matcher the matcher The consumer that validates that the atomic reference value is correct, or throws an exception
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public void untilAdder(final LongAdder adder, final Consumer<? super Long> matcher) {
+        untilAsserted(adder::longValue, matcher);
+    }
+
+    /**
      * Await until a {@link DoubleAdder} has a value matching the specified {@link org.hamcrest.Matcher}. E.g.
      * <p>&nbsp;</p>
      * <pre>
@@ -874,6 +984,22 @@ public class ConditionFactory {
      */
     public void untilAdder(final DoubleAdder adder, final Matcher<? super Double> matcher) {
         until(new CallableHamcrestCondition<>(adder::doubleValue, matcher, generateConditionSettings()));
+    }
+
+    /**
+     * Await until a DoubleAdder is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAdder(myAdder, value -&gt; Assertions.assertThat(value).isEqualTo(12.3d));
+     * </pre>
+     *
+     * @param adder   the atomic variable
+     * @param matcher the matcher The consumer that validates that the atomic reference value is correct, or throws an exception
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public void untilAdder(final DoubleAdder adder, final Consumer<? super Double> matcher) {
+        untilAsserted(adder::doubleValue, matcher);
     }
 
     /**
@@ -892,6 +1018,22 @@ public class ConditionFactory {
     }
 
     /**
+     * Await until a LongAccumulator is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAccumulator(myAdder, value -&gt; Assertions.assertThat(value).isEqualTo(123L));
+     * </pre>
+     *
+     * @param accumulator the atomic variable
+     * @param matcher     the matcher The consumer that validates that the atomic reference value is correct, or throws an exception
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public void untilAccumulator(final LongAccumulator accumulator, final Consumer<? super Long> matcher) {
+        untilAsserted(accumulator::longValue, matcher);
+    }
+
+    /**
      * Await until a {@link DoubleAccumulator} has a value matching the specified {@link org.hamcrest.Matcher}. E.g.
      * <p>&nbsp;</p>
      * <pre>
@@ -904,6 +1046,22 @@ public class ConditionFactory {
      */
     public void untilAccumulator(final DoubleAccumulator accumulator, final Matcher<? super Double> matcher) {
         until(new CallableHamcrestCondition<>(accumulator::doubleValue, matcher, generateConditionSettings()));
+    }
+
+    /**
+     * Await until a DoubleAccumulator is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAccumulator(myAdder, value -&gt; Assertions.assertThat(value).isEqualTo(12.3d));
+     * </pre>
+     *
+     * @param accumulator the atomic variable
+     * @param matcher     the matcher The consumer that validates that the atomic reference value is correct, or throws an exception
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public void untilAccumulator(final DoubleAccumulator accumulator, final Consumer<? super Double> matcher) {
+        untilAsserted(accumulator::doubleValue, matcher);
     }
 
     /**
@@ -923,6 +1081,23 @@ public class ConditionFactory {
      */
     public <V> V untilAtomic(final AtomicReference<V> atomic, final Matcher<? super V> matcher) {
         return until(new CallableHamcrestCondition<>(atomic::get, matcher, generateConditionSettings()));
+    }
+
+    /**
+     * Await until a Atomic variable is asserted by the {@code matcher} consumer
+     * E.g.
+     * <p>&nbsp;</p>
+     * <pre>
+     * await().untilAtomic(myAtomic, value -&gt; Assertions.assertThat(value).isEqualTo("something"));
+     * </pre>
+     *
+     * @param atomic  the atomic variable
+     * @param matcher the matcher The consumer that validates that the atomic reference value is correct, or throws an exception
+     * @param <V>     a V object.
+     * @throws org.awaitility.core.ConditionTimeoutException If condition was not fulfilled within the given time period.
+     */
+    public <V> void untilAtomic(final AtomicReference<V> atomic, final Consumer<? super V> matcher) {
+        untilAsserted(atomic::get, matcher);
     }
 
     /**
@@ -1009,5 +1184,4 @@ public class ConditionFactory {
         }
         return pollDelayToUse;
     }
-
 }

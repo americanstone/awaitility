@@ -14,18 +14,24 @@ jobs:
       matrix:
         include:
             - java: '8'
-              maven-profiles: '-P osgi-tests,kotlin'
+              maven-args: '-P osgi-tests,kotlin'
             - java: '11'
-              maven-profiles: ''
+              maven-args: ''
+            - java: '17'
+              maven-args: '-P modern-jvm'
+            - java: '21'
+              maven-args: '-P modern-jvm'
+            - java: '25'
+              maven-args: "-P modern-jvm -pl '!awaitility-groovy'"
 
     runs-on: 'ubuntu-latest'
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@main
     - name: Set up JDK
-      uses: actions/setup-java@v2
+      uses: actions/setup-java@main
       with:
         java-version: ${{ matrix.java }}
         distribution: 'zulu'
         cache: 'maven'
     - name: Build
-      run: mvn --no-transfer-progress -B clean install ${{ matrix.maven-profiles }}
+      run: mvn --no-transfer-progress -B clean install ${{ matrix.maven-args }}

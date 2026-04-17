@@ -15,6 +15,7 @@
  */
 package org.awaitility;
 
+import org.assertj.core.api.Assertions;
 import org.awaitility.classes.*;
 import org.awaitility.core.*;
 import org.hamcrest.Matcher;
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static java.util.concurrent.TimeUnit.*;
+import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.*;
 import static org.awaitility.Durations.*;
 import static org.hamcrest.Matchers.*;
@@ -63,6 +65,12 @@ public class AwaitilityTest {
         new Asynch(fakeRepository).perform();
         await().until(fakeRepositoryValueEqualsOne());
         assertEquals(1, fakeRepository.getValue());
+    }
+
+    @Test(timeout = 2000)
+    public void awaitOperationWithConsumerMatcher() {
+        new Asynch(fakeRepository).perform();
+        await().untilAsserted(fakeRepository::getValue, value -> Assertions.assertThat(value).isEqualTo(1));
     }
 
     @Test(timeout = 2000)
@@ -177,19 +185,19 @@ public class AwaitilityTest {
     }
 
     @Test(timeout = 2000, expected = ConditionTimeoutException.class)
-    public void remainingTimeIsNegativeAfterDurationTimeouts() {
+    public void remainingTimeIsNegativeOrZeroAfterDurationTimeouts() {
         new Asynch(fakeRepository).perform();
-        ConditionEvaluationListener conditionEvaluationListener = new ConditionEvaluationListener() {
+        ConditionEvaluationListener<Integer> conditionEvaluationListener = new ConditionEvaluationListener<Integer>() {
             @Override
-            public void conditionEvaluated(EvaluatedCondition condition) {
+            public void conditionEvaluated(EvaluatedCondition<Integer> condition) {
             }
 
             @Override
             public void onTimeout(TimeoutEvent timeoutEvent) {
-                MatcherAssert.assertThat(timeoutEvent.getRemainingTimeInMS(), lessThan(0L));
+                MatcherAssert.assertThat(timeoutEvent.getRemainingTimeInMS(), lessThanOrEqualTo(0L));
             }
         };
-        await().conditionEvaluationListener(conditionEvaluationListener).atMost(200, TimeUnit.MILLISECONDS).until(value(), equalTo(1));
+        await().pollDelay(50, MILLISECONDS).conditionEvaluationListener(conditionEvaluationListener).atMost(100, TimeUnit.MILLISECONDS).until(value(), equalTo(1));
     }
 
     @Test(timeout = 2000, expected = IllegalStateException.class)
@@ -277,7 +285,7 @@ public class AwaitilityTest {
                     throw new Exception("Nested");
                 }
             });
-            fail();
+            org.junit.Assert.fail();
         } catch (ConditionTimeoutException e) {
             assertNotNull(e.getCause());
             assertEquals("Nested", e.getCause().getMessage());
@@ -399,7 +407,7 @@ public class AwaitilityTest {
     @Test(timeout = 2000)
     public void awaitDisplaysMethodDeclaringTheSupplierWhenSupplierIsAnonymousClassAndConditionTimeoutExceptionOccursWhenUsingNanos() {
         exception.expect(ConditionTimeoutException.class);
-        exception.expectMessage(anyOf(Stream.of(equalTo(0).toString(), "null")
+        exception.expectMessage(Matchers.anyOf(Stream.of(equalTo(0).toString(), "null")
                 .map(s -> String.format("%s.valueAsAnonymous Callable expected %s but was %s within 120 nanoseconds.", AwaitilityTest.class.getName(), equalTo(2).toString(), s))
                 .map(Matchers::containsString)
                 .toArray(Matcher[]::new)));
@@ -501,6 +509,15 @@ public class AwaitilityTest {
         );
 
         assertThat(duration.toMillis(), greaterThan(1000L));
+    }
+
+    @Test
+    public void throwsIAEWhenTimeoutIsTooLargeForTheUnit() {
+        int timeoutMinutes = Integer.MAX_VALUE;
+        exception.expect(IllegalArgumentException.class);
+        exception.expectMessage("Cannot convert " + timeoutMinutes + " MINUTES to nanoseconds, as required by Awaitility, because this value is too large");
+
+        Awaitility.await().atMost(timeoutMinutes, TimeUnit.MINUTES).until(() -> true);
     }
 
     private Callable<Boolean> fakeRepositoryValueEqualsOne() {
